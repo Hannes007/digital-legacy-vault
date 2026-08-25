@@ -1,0 +1,19 @@
+# Checkov policy scan config (referenced by .github/workflows/terraform.yml).
+# Skips are deliberate, documented dev/architecture decisions — NOT blanket
+# suppressions. Review on every addition.
+framework:
+  - terraform
+compact: true
+quiet: true
+download-external-modules: false
+skip-check:
+  # KMS key policy uses the AWS-recommended root "Enable IAM User Permissions"
+  # statement to delegate to IAM and prevent key lockout (documented in modules/kms).
+  - CKV_AWS_33   # KMS key policy allows all principals within the account root (by design)
+  # Access logging on the app buckets is handled centrally; the quarantine bucket
+  # is ephemeral (24h expiry) so per-bucket access logs add cost without value.
+  - CKV_AWS_18   # S3 bucket access logging (central logging bucket, out of module scope)
+  - CKV2_AWS_62  # S3 event notifications (wired by the app/vault context, not infra)
+  # Dev RDS is intentionally single-AZ for cost; Multi-AZ is a module flag set on
+  # staging/prod. Enforced by review, not checkov, per environment.
+  - CKV_AWS_157  # RDS Multi-AZ (env-specific flag; on for staging/prod)

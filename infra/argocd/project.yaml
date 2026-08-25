@@ -1,0 +1,21 @@
+# Argo CD AppProject scoping DLV apps to this repo + the app namespaces.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: dlv
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Digital Legacy Vault application delivery
+  sourceRepos:
+    - https://github.com/stellr-sa/digital-legacy-vault.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: dlv-*
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

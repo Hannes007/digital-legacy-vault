@@ -1,0 +1,162 @@
+openapi: 3.1.0
+info:
+  title: Digital Legacy Vault — Partner API
+  version: 1.0.0
+  summary: Scoped partner API for integrations (Phase 8).
+  description: |
+    API-key-authenticated partner surface of Digital Legacy Vault.
+
+    * Authentication: `Authorization: Bearer dlv_sk_…` (or `X-Api-Key`).
+    * Authorisation: least-privilege scopes attached to each key
+      (`documents:read`, `usage:read`, `webhooks:manage`).
+    * Metadata only — document *content* is never exposed through this API.
+    * Errors follow RFC 9457 `application/problem+json`.
+    * Versioning: see `partner-api-versioning.md` (URI-versioned, additive
+      changes within a major, 12-month deprecation window).
+  contact:
+    name: Stellr SA — DLV integrations
+    email: integrations@dlv.stellr-net.com
+servers:
+  - url: https://api.dlv.stellr-net.com/api/v1
+    description: Production (af-south-1)
+security:
+  - apiKey: []
+tags:
+  - name: Partner
+    description: API-key-authenticated partner endpoints.
+  - name: Webhooks
+    description: Outbound event deliveries DLV sends to partner endpoints.
+paths:
+  /partner/ping:
+    get:
+      tags: [Partner]
+      operationId: partnerPing
+      summary: Verify a key and inspect its scopes.
+      responses:
+        '200':
+          description: The key is valid.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, scopes]
+                properties:
+                  ok: { type: boolean }
+                  keyId: { type: string, format: uuid }
+                  scopes:
+                    type: array
+                    items: { $ref: '#/components/schemas/ApiKeyScope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /partner/documents:
+    get:
+      tags: [Partner]
+      operationId: partnerListDocuments
+      summary: List the key owner's document metadata.
+      description: Requires the `documents:read` scope. Returns metadata only.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Document metadata, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PartnerDocument' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/MissingScope' }
+webhooks:
+  documentReady:
+    post:
+      tags: [Webhooks]
+      operationId: whDocumentReady
+      summary: document.ready — a document finished the scan/promote pipeline.
+      description: |
+        Deliveries are signed with `X-DLV-Signature: t=<unix>,v1=<hex hmac-sha256>`
+        where the MAC input is `<t>.<raw body>` and the key is your endpoint's
+        `whsec_…` secret (shown once at registration). Reject deliveries whose
+        timestamp is outside ±5 minutes. Reply 2xx within 5 s; anything else is
+        retried with exponential backoff (1m, 5m, 30m, 2h, 6h; max 6 attempts).
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookEnvelope' }
+      responses:
+        '200': { description: Acknowledged. }
+  signatureSealed:
+    post:
+      tags: [Webhooks]
+      operationId: whSignatureSealed
+      summary: signature.sealed — a signing ceremony completed and was sealed.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookEnvelope' }
+      responses:
+        '200': { description: Acknowledged. }
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: dlv_sk
+      description: Partner API key. Also accepted as an `X-Api-Key` header.
+  responses:
+    Unauthorized:
+      description: Missing, invalid, revoked or expired API key.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    MissingScope:
+      description: The key lacks a scope this route requires.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+  schemas:
+    ApiKeyScope:
+      type: string
+      enum: [documents:read, usage:read, webhooks:manage]
+    PartnerDocument:
+      type: object
+      required: [id, title, type, status, currentVersion, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        type:
+          type: string
+          description: Canonical DocumentType literal (21 values, PROJECT_MEMORY §5).
+        status:
+          type: string
+          enum: [PENDING_UPLOAD, SCANNING, READY, INFECTED, INVALID, FAILED]
+        currentVersion: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    WebhookEnvelope:
+      type: object
+      required: [id, type, createdAt, data]
+      properties:
+        id: { type: string, format: uuid, description: Unique event id (dedupe key). }
+        type:
+          type: string
+          enum:
+            - document.ready
+            - document.infected
+            - signature.sealed
+            - emergency_access.requested
+            - emergency_access.activated
+        createdAt: { type: string, format: date-time }
+        data:
+          type: object
+          description: Event-specific payload (documented per event type).
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }

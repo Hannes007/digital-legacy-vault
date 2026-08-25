@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // OVERRIDE RATIONALE — the monorepo base pins module/moduleResolution to
+    // "NodeNext", which enforces ESM semantics (mandatory explicit file
+    // extensions on relative imports, import.meta, dual-package hazards).
+    // NestJS 11's dependency injection relies on emitDecoratorMetadata plus
+    // CommonJS require() interop, and both the Nest CLI build pipeline and the
+    // supported ts-jest setup are CJS-first. "commonjs" + classic "node10"
+    // resolution is the combination that compiles and runs cleanly with
+    // NestJS 11 on TypeScript 5.7 strict. Revisit once Nest ships first-class
+    // ESM support; the rest of the base strictness flags remain in force.
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "declaration": false,
+    "declarationMap": false,
+    "outDir": "dist",
+    "baseUrl": ".",
+    "types": ["node", "jest"]
+  },
+  "include": ["src/**/*", "test/**/*"],
+  "exclude": ["dist", "node_modules"]
+}

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en" data-mode="light">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>DLV Phase 5 — end-to-end journey</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.14.0/dist/tabler-icons.min.css"/>
+<style>
+  :root{
+    --surface-0:#F2F4F7;--surface-1:#F7F8FA;--surface-2:#FFFFFF;
+    --text-primary:#1D2433;--text-secondary:#5D6B82;--text-muted:#8B94A6;
+    --border:#E4E7EC;--border-strong:#D0D5DD;
+    --bg-accent:#E3EEF9;--text-accent:#224C77;--border-accent:#6BA7DB;
+    --bg-success:#EAF3DE;--text-success:#27500A;
+    --bg-warning:#FAEEDA;--text-warning:#633806;
+    --bg-danger:#FCEBEB;--text-danger:#791F1F;
+    --radius:8px;--font-mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+    --font-voice:Georgia,"Times New Roman",serif;
+    --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --surface-0:#0E1116;--surface-1:#171B22;--surface-2:#1F242E;
+    --text-primary:#F0F2F5;--text-secondary:#B4BCC9;--text-muted:#8B94A6;
+    --border:#2A303C;--border-strong:#3A4150;
+    --bg-accent:#1D3049;--text-accent:#9CC5E8;--border-accent:#2F6EAD;
+    --bg-success:#173404;--text-success:#C0DD97;
+    --bg-warning:#412402;--text-warning:#FAC775;
+    --bg-danger:#501313;--text-danger:#F7C1C1;
+  }}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--surface-0);color:var(--text-primary);font-family:var(--font-sans);line-height:1.6;}
+  .wrap{max-width:860px;margin:0 auto;padding:28px 20px 48px;}
+  h1{font-size:22px;font-weight:500;margin:0 0 4px;}
+  .sub{color:var(--text-secondary);font-size:14px;margin:0 0 22px;}
+  button{font-family:inherit;background:transparent;border:0.5px solid var(--border-strong);color:var(--text-primary);border-radius:var(--radius);padding:8px 14px;font-size:14px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
+  button:hover{background:var(--surface-1);}
+  button:disabled{cursor:default;}
+  .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);}
+  input[type=checkbox]{accent-color:var(--text-accent);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h2 class="sr-only">Interactive walk-through of the Digital Legacy Vault Phase 5 journey: request, sign, seal, independently verify the seal, apply S3 Object Lock retention, place a legal hold (whole-account or single-document scope), and a POPIA erasure request that the hold refuses.</h2>
+  <h1>Digital Legacy Vault — Phase 5 journey</h1>
+  <p class="sub">Sign &rarr; seal &amp; timestamp &rarr; verify &rarr; Object Lock &rarr; legal hold &rarr; a POPIA erasure the hold refuses. Step through it; switch the hold scope, and toggle release to see both outcomes.</p>
+
+  <div id="rail" style="display:flex;gap:6px;margin-bottom:1.25rem;flex-wrap:wrap;"></div>
+  <div style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px;align-items:start;">
+    <div id="screen" style="background:var(--surface-1);border-radius:12px;padding:14px;min-height:320px;"></div>
+    <div id="note" style="background:var(--surface-2);border:0.5px solid var(--border);border-radius:12px;padding:14px;min-height:320px;"></div>
+  </div>
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px;">
+    <button id="prev" aria-label="Previous step"><i class="ti ti-arrow-left" aria-hidden="true"></i> Back</button>
+    <span id="counter" style="font-size:13px;color:var(--text-muted);"></span>
+    <button id="next">Next <i class="ti ti-arrow-right" aria-hidden="true"></i></button>
+  </div>
+</div>
+
+<script>
+(function(){
+  var state={i:0,holdReleased:false,holdScope:'USER'};
+  var mono="font-family:var(--font-mono);font-size:12px;";
+  function pill(txt,bg,fg,ic){return '<span style="display:inline-flex;align-items:center;gap:5px;background:var('+bg+');color:var('+fg+');font-size:12px;padding:3px 10px;border-radius:999px;">'+(ic?'<i class="ti '+ic+'" aria-hidden="true"></i>':'')+txt+'</span>';}
+  function row(k,v){return '<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:0.5px solid var(--border);"><span style="color:var(--text-secondary);font-size:13px;">'+k+'</span><span style="font-size:13px;text-align:right;">'+v+'</span></div>';}
+  function head(ic,t,s){return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;"><span style="width:34px;height:34px;border-radius:9px;background:var(--bg-accent);color:var(--text-accent);display:flex;align-items:center;justify-content:center;"><i class="ti '+ic+'" style="font-size:19px;" aria-hidden="true"></i></span><div><div style="font-size:15px;font-weight:500;">'+t+'</div><div style="font-size:12px;color:var(--text-muted);">'+s+'</div></div></div>';}
+  function note(tag,body){return '<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;">Behind the scenes</div>'+'<div style="'+mono+'background:var(--surface-1);border-radius:8px;padding:8px 10px;margin-bottom:10px;color:var(--text-accent);">'+tag+'</div>'+'<div style="font-size:13.5px;color:var(--text-secondary);line-height:1.6;">'+body+'</div>';}
+  function scopeLabel(){return state.holdScope==='USER'?'USER · Ada':'DOCUMENT · Enduring PoA v1';}
+
+  var steps=[
+    {label:"Request",icon:"ti-file-plus",screen:function(){
+      return head("ti-file-text","Enduring power of attorney","Signature request")
+        +row("Signer","Ada Lovelace")
+        +row("Document status",pill("READY","--bg-success","--text-success","ti-check"))
+        +row("Request status",pill("PENDING","--bg-warning","--text-warning","ti-clock"))
+        +'<div style="margin-top:14px;"><button style="pointer-events:none;">Sign &amp; seal</button></div>';
+    },note:function(){return note("POST /signature-requests","Ada asks for a signature over a READY vault document. Nothing is sealed yet — this only opens a pending request with an expiry window.");}},
+
+    {label:"Sign",icon:"ti-signature",screen:function(){
+      return head("ti-signature","Sign “Enduring power of attorney”","Ceremony")
+        +'<div style="border:0.5px dashed var(--border-strong);border-radius:8px;height:70px;display:flex;align-items:center;justify-content:center;font-family:var(--font-voice);font-size:26px;">Ada Lovelace</div>'
+        +'<label style="display:flex;gap:8px;align-items:flex-start;background:var(--surface-2);border-radius:8px;padding:10px;margin-top:12px;font-size:12.5px;color:var(--text-secondary);"><i class="ti ti-square-check" style="color:var(--text-accent);font-size:18px;" aria-hidden="true"></i><span>I intend to sign this electronically and my signature is as binding as a handwritten one under the ECTA.</span></label>'
+        +'<div style="margin-top:12px;"><button style="pointer-events:none;">Sign &amp; seal</button></div>';
+    },note:function(){return note("POST /signature-requests/:id/sign","The captured signature is hashed (never stored raw) and the exact ECTA consent statement is captured. The server assembles a versioned evidence bundle binding who signed what, when, and with what consent.");}},
+
+    {label:"Seal",icon:"ti-rosette-discount-check",screen:function(){
+      return head("ti-rosette-discount-check","Sealed signature","Cryptographic seal")
+        +row("Method","TYPE")
+        +row("Seal digest",'<span style="'+mono+'">3f9c…a71e (SHA-256)</span>')
+        +row("Timestamp","dev-local · 2026-07-16 10:00 UTC")
+        +'<div style="margin-top:12px;">'+pill("Consent recorded","--bg-accent","--text-accent","ti-checkbox")+' <span style="font-size:12px;color:var(--text-muted);">ELECTRONIC_SIGNATURE</span></div>';
+    },note:function(){return note("consent.record() · audit: signature.sealed","SHA-256 evidence digest + RFC 3161 timestamp are persisted. A first-class Consent record is written via the ConsentRecorder port, bound to the signature (sourceContext = signature:&lt;id&gt;) — no longer inline-only.");}},
+
+    {label:"Verify",icon:"ti-shield-check",screen:function(){
+      return head("ti-shield-check","Verify seal","Independent re-check")
+        +row("Evidence digest",pill("Matches","--bg-success","--text-success","ti-check"))
+        +row("Trusted timestamp",pill("Valid","--bg-success","--text-success","ti-check"))
+        +row("Document integrity",pill("Intact","--bg-success","--text-success","ti-check"))
+        +'<div style="margin-top:12px;">'+row("Overall",pill("Valid","--bg-success","--text-success","ti-shield-check"))+'</div>'
+        +'<div style="margin-top:10px;font-size:12.5px;color:var(--text-secondary);line-height:1.6;">If the document were re-versioned or altered, the integrity check would fail and the seal would read <span style="color:var(--text-danger);">invalid</span>.</div>';
+    },note:function(){return note("GET /signatures/:id/verification","SealVerificationService re-derives everything independently: recompute the evidence digest, verify the RFC 3161 timestamp over it, and re-hash the current document to confirm it still matches what was sealed. All three must pass.");}},
+
+    {label:"Lock",icon:"ti-lock",screen:function(){
+      return head("ti-lock","Document version v1","S3 Object Lock")
+        +row("Storage key",'<span style="'+mono+'">documents/ada/…/v1</span>')
+        +row("Retention mode",pill("COMPLIANCE","--bg-accent","--text-accent","ti-lock"))
+        +row("Retain until","2033-07-16")
+        +'<div style="margin-top:12px;font-size:12.5px;color:var(--text-secondary);line-height:1.6;">Write-once, read-many. The object can’t be deleted or overwritten — by anyone — until the retention date.</div>';
+    },note:function(){return note("DocumentRetentionService → PutObjectRetention","After sealing, COMPLIANCE-mode WORM retention is applied to the signed version for SIGNED_DOCUMENT_RETENTION_YEARS. In dev (Object Lock NONE) this is a safe no-op. Audit: document.retention.applied.");}},
+
+    {label:"Hold",icon:"ti-gavel",screen:function(){
+      var seg='<div style="display:flex;gap:6px;margin-bottom:10px;">'
+        +'<button id="scopeUser" style="flex:1;font-size:12px;padding:6px;'+(state.holdScope==='USER'?'background:var(--bg-accent);color:var(--text-accent);border-color:var(--border-accent);':'')+'">Whole account</button>'
+        +'<button id="scopeDoc" style="flex:1;font-size:12px;padding:6px;'+(state.holdScope==='DOCUMENT'?'background:var(--bg-accent);color:var(--text-accent);border-color:var(--border-accent);':'')+'">Single document</button>'
+        +'</div>';
+      return head("ti-gavel","Legal hold","Compliance admin")
+        +seg
+        +row("Scope",pill(scopeLabel(),"--bg-warning","--text-warning","ti-user"))
+        +row("Reason","Estate litigation — Case 2026/1187")
+        +row("Status",pill("ACTIVE","--bg-warning","--text-warning","ti-alert-triangle"))
+        +row("Placed by","Compliance officer");
+    },note:function(){return note("POST /legal-holds · role-gated","Only SYSTEM_ADMIN / SUPER_ADMIN can place a hold (auditors read-only). resolveActiveHolds matches a USER hold on Ada, or a DOCUMENT/VAULT hold on anything she owns — either scope blocks her erasure. Audit: legal_hold.placed.");}},
+
+    {label:"Erase",icon:"ti-trash",screen:function(){
+      var toggle='<label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--text-secondary);margin-top:14px;cursor:pointer;"><input type="checkbox" id="rel" '+(state.holdReleased?'checked':'')+'/> Release the legal hold, then retry</label>';
+      if(!state.holdReleased){
+        return head("ti-trash","Request erasure","Privacy &amp; data (POPIA)")
+          +'<div style="background:var(--bg-warning);border-radius:8px;padding:12px;"><div style="display:flex;align-items:center;gap:8px;color:var(--text-warning);font-weight:500;font-size:14px;"><i class="ti ti-shield-x" aria-hidden="true"></i> Erasure refused</div><div style="font-size:12.5px;color:var(--text-warning);margin-top:6px;">1 active legal hold applies. Nothing was deleted.</div></div>'
+          +'<div style="margin-top:10px;">'+row("Blocking hold",scopeLabel())+row("Reason","Estate litigation — Case 2026/1187")+'</div>'
+          +toggle;
+      }
+      return head("ti-trash","Request erasure","Privacy &amp; data (POPIA)")
+        +'<div style="background:var(--bg-success);border-radius:8px;padding:12px;"><div style="display:flex;align-items:center;gap:8px;color:var(--text-success);font-weight:500;font-size:14px;"><i class="ti ti-shield-check" aria-hidden="true"></i> Erasure completed</div><div style="font-size:12.5px;color:var(--text-success);margin-top:6px;">Crypto-erasure — the WORM object stays, its key is destroyed.</div></div>'
+        +'<div style="margin-top:10px;">'+row("Document keys","destroyed")+row("Client-vault items","deleted")+row("Sessions","revoked")+row("Profile","anonymised")+'</div>'
+        +toggle;
+    },note:function(){return note("POST /data-subject/erasure → resolveActiveHolds","If any hold covers the subject → REFUSED, nothing deleted. Otherwise crypto-erasure: destroy the wrapped DEKs so Object-Lock-retained ciphertext is unrecoverable, delete client-vault items, revoke sessions, anonymise the profile — honouring holds and Object Lock at once. Audit: data_subject.erasure.refused / .completed.");}}
+  ];
+
+  var railEl=document.getElementById('rail'),screenEl=document.getElementById('screen'),noteEl=document.getElementById('note'),counterEl=document.getElementById('counter');
+  var prevB=document.getElementById('prev'),nextB=document.getElementById('next');
+  function render(){
+    railEl.innerHTML=steps.map(function(s,idx){
+      var on=idx===state.i,done=idx<state.i;
+      var bg=on?'var(--bg-accent)':(done?'var(--surface-2)':'transparent');
+      var col=on?'var(--text-accent)':(done?'var(--text-secondary)':'var(--text-muted)');
+      var bd=on?'var(--border-accent)':'var(--border)';
+      return '<button data-i="'+idx+'" style="flex:1;min-width:80px;background:'+bg+';color:'+col+';border:0.5px solid '+bd+';border-radius:8px;padding:7px 6px;font-size:12px;display:flex;align-items:center;justify-content:center;gap:6px;"><i class="ti '+s.icon+'" aria-hidden="true"></i>'+s.label+'</button>';
+    }).join('');
+    Array.prototype.forEach.call(railEl.querySelectorAll('button'),function(b){b.onclick=function(){state.i=+b.getAttribute('data-i');render();};});
+    var st=steps[state.i];
+    screenEl.innerHTML=st.screen();noteEl.innerHTML=st.note();
+    counterEl.textContent='Step '+(state.i+1)+' of '+steps.length;
+    prevB.disabled=state.i===0;nextB.disabled=state.i===steps.length-1;
+    prevB.style.opacity=prevB.disabled?.4:1;nextB.style.opacity=nextB.disabled?.4:1;
+    var rel=document.getElementById('rel'); if(rel)rel.onchange=function(){state.holdReleased=rel.checked;render();};
+    var su=document.getElementById('scopeUser'); if(su)su.onclick=function(){state.holdScope='USER';render();};
+    var sd=document.getElementById('scopeDoc'); if(sd)sd.onclick=function(){state.holdScope='DOCUMENT';render();};
+  }
+  prevB.onclick=function(){if(state.i>0){state.i--;render();}};
+  nextB.onclick=function(){if(state.i<steps.length-1){state.i++;render();}};
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,148 @@
+# =============================================================================
+# deploy-dev.yml — build + publish images, then GitOps bump for dev
+#
+# Design source: docs/06-engineering/cicd-pipeline.md §3,
+#                docs/06-engineering/deployment-strategy.md §2
+#
+# Flow: push to main → build api+web images → push to ECR (OIDC, no stored
+# keys) tagged `sha-<gitsha>` (immutable promotion tag) + `dev` → commit the
+# new tag into infra/helm/values/dev.yaml. Argo CD watches this repo and syncs
+# the dev cluster; this workflow NEVER talks to Kubernetes (GitOps invariant).
+#
+# Security posture:
+#   - AWS access exclusively via GitHub OIDC role assumption
+#     (aws-actions/configure-aws-credentials); zero long-lived AWS keys.
+#   - The assumed role (dlv-gha-ecr-push, created in infra/terraform/bootstrap)
+#     can only push to the two dlv/* ECR repositories — it cannot deploy.
+#   - Manifest commit is made with the ephemeral GITHUB_TOKEN and [skip ci]
+#     so the bot commit cannot trigger a build loop.
+# =============================================================================
+name: deploy-dev
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'infra/helm/values/dev.yaml' # bot bump commit must not re-trigger
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false # never cancel a half-finished publish/bump
+
+env:
+  AWS_REGION: af-south-1
+
+jobs:
+  build-and-push:
+    name: build + push (${{ matrix.app }})
+    runs-on: ubuntu-24.04
+    # GitHub environment carries the OIDC trust condition (environment claim)
+    # and makes ECR pushes visible in the Deployments UI.
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write # OIDC token for AWS role assumption
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [api, web, workers]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate Dockerfile
+        id: dockerfile
+        run: |
+          if [ -f "docker/${{ matrix.app }}.Dockerfile" ]; then
+            echo "path=docker/${{ matrix.app }}.Dockerfile" >> "$GITHUB_OUTPUT"
+          elif [ -f "apps/${{ matrix.app }}/Dockerfile" ]; then
+            echo "path=apps/${{ matrix.app }}/Dockerfile" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error title=Dockerfile missing::No Dockerfile found for ${{ matrix.app }}."
+            exit 1
+          fi
+
+      # OIDC role assumption — account ID comes from a repository variable,
+      # never hardcoded (multi-account topology per aws-architecture.md §1).
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_TOOLING_ACCOUNT_ID }}:role/dlv-gha-ecr-push
+          role-session-name: gha-deploy-dev-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@fa648b43de3d4d023bcb3f89ed6940096949c419 # v2
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ steps.dockerfile.outputs.path }}
+          push: true
+          # sha-<gitsha> is the immutable artefact that travels dev → staging
+          # → prod (build once, promote by digest); `dev` is a moving pointer
+          # for humans/tools only.
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/dlv/${{ matrix.app }}:sha-${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/dlv/${{ matrix.app }}:dev
+          provenance: true
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+  # ---------------------------------------------------------------------------
+  # GitOps: write the new image tag into the dev values file. Argo CD (running
+  # in the dev cluster) detects the commit and syncs — the pipeline never runs
+  # kubectl/helm against the cluster.
+  # ---------------------------------------------------------------------------
+  update-dev-manifests:
+    name: bump dev image tags (GitOps)
+    needs: build-and-push
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # push the values bump commit
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # GITHUB_TOKEN is ephemeral and scoped to this repo; a PAT is not
+          # required because the bump commit is intentionally [skip ci].
+          persist-credentials: true
+
+      - name: Update image tags in infra/helm/values/dev.yaml
+        env:
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          yq -i '.api.image.tag = "sha-" + strenv(GIT_SHA)' infra/helm/values/dev.yaml
+          yq -i '.web.image.tag = "sha-" + strenv(GIT_SHA)' infra/helm/values/dev.yaml
+          yq -i '.worker.image.tag = "sha-" + strenv(GIT_SHA)' infra/helm/values/dev.yaml
+
+      - name: Commit and push bump
+        env:
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          if git diff --quiet -- infra/helm/values/dev.yaml; then
+            echo "Image tags already current — nothing to commit."
+            exit 0
+          fi
+          git config user.name "dlv-gitops-bot"
+          git config user.email "gitops@stellr-net.com"
+          git add infra/helm/values/dev.yaml
+          git commit -m "chore(release): dev image bump to sha-${GIT_SHA} [skip ci]"
+          # Rebase-retry in case another run pushed between checkout and push.
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              exit 0
+            fi
+            echo "Push rejected (attempt ${attempt}) — rebasing and retrying."
+            git pull --rebase origin main
+          done
+          echo "::error title=GitOps bump failed::Could not push dev values bump after 3 attempts."
+          exit 1

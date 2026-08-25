@@ -1,0 +1,72 @@
+# =============================================================================
+# dev environment values for the `dlv` umbrella chart.
+#
+# Consumed by Argo CD (see infra/README.md). The image tags below are rewritten
+# on every push to main by .github/workflows/deploy-dev.yml (GitOps bump) to
+# sha-<gitsha>; the committed default is the moving `dev` tag.
+#
+# NOTE: <DEV_ACCOUNT_ID> and the ACM/IRSA ARNs are placeholders — Argo CD's
+# per-cluster config (or a values overlay) supplies the real account-specific
+# values. No secrets appear here (invariant §7.7).
+# =============================================================================
+
+global:
+  imageRegistry: "<DEV_ACCOUNT_ID>.dkr.ecr.af-south-1.amazonaws.com"
+
+api:
+  config:
+    AWS_REGION: af-south-1
+    QUARANTINE_BUCKET: dlv-dev-quarantine
+    DOCUMENTS_BUCKET: dlv-dev-documents
+    CLAMAV_HOST: dlv-clamav
+    OCR_PROVIDER: textract
+  image:
+    repository: dlv/api
+    tag: dev
+  serviceAccount:
+    roleArn: "arn:aws:iam::<DEV_ACCOUNT_ID>:role/dlv-dev-api-irsa"
+  existingSecret: dlv-api-secrets
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+
+web:
+  image:
+    repository: dlv/web
+    tag: dev
+  serviceAccount:
+    roleArn: "arn:aws:iam::<DEV_ACCOUNT_ID>:role/dlv-dev-web-irsa"
+  existingSecret: dlv-web-secrets
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+
+worker:
+  config:
+    AWS_REGION: af-south-1
+    QUARANTINE_BUCKET: dlv-dev-quarantine
+    DOCUMENTS_BUCKET: dlv-dev-documents
+    CLAMAV_HOST: dlv-clamav
+    OCR_PROVIDER: textract
+  image:
+    repository: dlv/workers
+    tag: dev
+  serviceAccount:
+    roleArn: "arn:aws:iam::<DEV_ACCOUNT_ID>:role/dlv-dev-worker-irsa"
+  existingSecret: dlv-worker-secrets
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+
+ingress:
+  enabled: true
+  className: alb
+  host: dev.dlv.stellr-net.com
+  certificateArn: "arn:aws:acm:af-south-1:<DEV_ACCOUNT_ID>:certificate/<cert-id>"
+
+networkPolicy:
+  enabled: true
+  ingressControllerNamespace: kube-system

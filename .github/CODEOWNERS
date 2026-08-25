@@ -1,0 +1,46 @@
+# =============================================================================
+# CODEOWNERS — Digital Legacy Vault
+# Bounded-context map per PROJECT_MEMORY.md §4.
+# Later rules win: security-sensitive paths are listed last so the
+# @stellr-sa/security requirement cannot be shadowed.
+# =============================================================================
+
+# Default owner for anything not matched below
+*                                               @stellr-sa/platform
+
+# --- Apps (bounded contexts, PROJECT_MEMORY §4) ------------------------------
+/apps/web/                                      @stellr-sa/platform
+/apps/api/                                      @stellr-sa/platform
+/apps/workers/                                  @stellr-sa/platform
+
+# Security-relevant bounded contexts require a security review as well
+/apps/api/src/modules/identity/                 @stellr-sa/platform @stellr-sa/security
+/apps/api/src/modules/vault/                    @stellr-sa/platform @stellr-sa/security
+/apps/api/src/modules/sharing/                  @stellr-sa/platform @stellr-sa/security
+/apps/api/src/modules/estate/                   @stellr-sa/platform @stellr-sa/security
+/apps/api/src/modules/signature/                @stellr-sa/platform @stellr-sa/security
+/apps/api/src/modules/audit/                    @stellr-sa/platform @stellr-sa/security
+/apps/api/src/modules/notification/             @stellr-sa/platform
+/apps/api/src/modules/billing/                  @stellr-sa/platform
+/apps/api/src/modules/ai/                       @stellr-sa/platform
+/apps/api/src/modules/admin/                    @stellr-sa/platform @stellr-sa/security
+/apps/api/src/modules/integration/              @stellr-sa/platform @stellr-sa/security
+
+# --- Shared packages ---------------------------------------------------------
+/packages/shared-types/                         @stellr-sa/platform
+/packages/ui/                                   @stellr-sa/platform
+/packages/config/                               @stellr-sa/platform
+/packages/eslint-config/                        @stellr-sa/platform
+
+# ALL cryptographic primitives live here (phase-2-contracts.md) — security owns
+/packages/crypto/                               @stellr-sa/security
+
+# --- Infrastructure & delivery (security-sensitive) --------------------------
+/infra/                                         @stellr-sa/platform @stellr-sa/security
+/docker/                                        @stellr-sa/platform @stellr-sa/security
+/.github/                                       @stellr-sa/platform @stellr-sa/security
+/.github/workflows/                             @stellr-sa/security
+
+# --- Canonical decision documents --------------------------------------------
+/PROJECT_MEMORY.md                              @stellr-sa/platform @stellr-sa/security
+/docs/04-security/                              @stellr-sa/security

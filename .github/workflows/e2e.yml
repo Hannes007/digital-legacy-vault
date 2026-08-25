@@ -1,0 +1,103 @@
+# =============================================================================
+# e2e.yml — Journeys 2–8 Playwright suite against a deployed stack.
+#
+# Gated: runs on manual dispatch (choose the target environment) and can be
+# chained after a successful dev deploy. It never runs on ordinary PRs/pushes,
+# so it can't fail the unit pipeline. The spec itself self-skips when the stack
+# or the seeded test account is unavailable.
+#
+# Required configuration on the selected GitHub Environment:
+#   Variables: E2E_BASE_URL (web), E2E_API_URL (api)
+#   Secrets:   E2E_EMAIL, E2E_PASSWORD  (a seeded, email-verified account);
+#              E2E_EMAIL_2, E2E_PASSWORD_2 (optional 2nd account — journey 4)
+# =============================================================================
+name: e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: environment
+        default: dev
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22
+
+jobs:
+  journeys:
+    name: Journeys 2–8 (web)
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install Playwright browser
+        run: pnpm --filter @dlv/web exec playwright install --with-deps chromium
+      - name: Run journeys 2–8
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ vars.E2E_BASE_URL }}
+          DLV_API_URL: ${{ vars.E2E_API_URL }}
+          E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          E2E_EMAIL_2: ${{ secrets.E2E_EMAIL_2 }}
+          E2E_PASSWORD_2: ${{ secrets.E2E_PASSWORD_2 }}
+        run: pnpm --filter @dlv/web test:e2e
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 14
+
+  api-pipeline:
+    name: API pipeline (vault) e2e
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dlv
+          POSTGRES_PASSWORD: dlv
+          POSTGRES_DB: dlv
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U dlv" --health-interval 10s
+          --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: postgresql://dlv:dlv@localhost:5432/dlv?schema=public
+      REDIS_URL: redis://localhost:6379
+      # Set E2E_STORAGE=1 (+ real bucket/KMS/clamd vars) on the environment to
+      # exercise the full S3→clamd→promote path; otherwise those cases self-skip.
+      E2E_STORAGE: ${{ vars.E2E_STORAGE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Migrate database
+        run: pnpm --filter @dlv/api exec prisma migrate deploy
+      - name: Apply FTS migration
+        run: |
+          PGPASSWORD=dlv psql -h localhost -U dlv -d dlv -f apps/api/prisma/sql/vault-fts.sql
+      - name: Run vault + auth e2e
+        run: pnpm --filter @dlv/api test:e2e

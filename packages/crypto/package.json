@@ -1,0 +1,61 @@
+{
+  "name": "@dlv/crypto",
+  "version": "0.1.0",
+  "private": true,
+  "description": "All cryptographic primitives for Digital Legacy Vault. Security invariant: crypto is used only via this package.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./shamir": {
+      "import": {
+        "types": "./dist/shamir.d.ts",
+        "default": "./dist/shamir.js"
+      },
+      "require": {
+        "types": "./dist/shamir.d.cts",
+        "default": "./dist/shamir.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "lint": "eslint .",
+    "clean": "rimraf dist coverage .turbo"
+  },
+  "dependencies": {
+    "argon2": "^0.41.1"
+  },
+  "devDependencies": {
+    "@dlv/eslint-config": "workspace:*",
+    "@types/node": "^22.10.5",
+    "@vitest/coverage-v8": "^3.1.4",
+    "eslint": "^9.27.0",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.1.4"
+  }
+}

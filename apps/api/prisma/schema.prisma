@@ -1,0 +1,1254 @@
+// Digital Legacy Vault — Prisma schema (Phase 2: identity context + audit chain).
+// Conventions (PROJECT_MEMORY §8 / erd.md §8):
+//   - Models are canonical PascalCase entity names, mapped to snake_case plural
+//     tables via @@map / @map.
+//   - All IDs are UUIDv7 generated in application code (uuidv7 npm package),
+//     never by the database.
+//   - All timestamps are timestamptz UTC.
+//   - Emails are normalised to lowercase in the Email value object before they
+//     reach the database (citext deferred — avoids a Prisma preview feature).
+//   - PII columns marked [ENC] hold @dlv/crypto FieldCipher output
+//     ("dlv1.<iv>.<tag>.<ct>").
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+  DECEASED_VERIFIED
+  DELETED
+
+  @@map("user_status")
+}
+
+enum PlatformRole {
+  GUEST
+  REGISTERED_USER
+  PREMIUM_USER
+  FAMILY_ADMIN
+  EXECUTOR
+  BENEFICIARY
+  LAWYER
+  DOCTOR
+  HOSPITAL_ADMIN
+  FINANCIAL_ADVISER
+  COMPANY_ADMIN
+  SYSTEM_ADMIN
+  SUPER_ADMIN
+  AUDITOR
+  SUPPORT_AGENT
+
+  @@map("platform_role")
+}
+
+enum RefreshTokenStatus {
+  ACTIVE
+  ROTATED
+  REVOKED
+
+  @@map("refresh_token_status")
+}
+
+enum TotpStatus {
+  PENDING
+  ENABLED
+
+  @@map("totp_status")
+}
+
+enum DeviceKind {
+  BROWSER
+  MOBILE_PWA
+  WEBAUTHN_PASSKEY
+
+  @@map("device_kind")
+}
+
+enum OrgType {
+  LAW_FIRM
+  HOSPITAL
+  INSURER
+  FINANCIAL_ADVISORY
+  COMPANY
+  FAMILY
+
+  @@map("org_type")
+}
+
+enum OrgMemberRole {
+  COMPANY_ADMIN
+  HOSPITAL_ADMIN
+  LAWYER
+  DOCTOR
+  FINANCIAL_ADVISER
+  MEMBER
+
+  @@map("org_member_role")
+}
+
+enum OrgMemberStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REMOVED
+
+  @@map("org_member_status")
+}
+
+// ---------------------------------------------------------------------------
+// identity context
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String     @id @db.Uuid
+  email           String     @unique
+  emailVerifiedAt DateTime?  @map("email_verified_at") @db.Timestamptz(6)
+  firstName       String     @map("first_name")
+  lastName        String     @map("last_name")
+  status          UserStatus @default(PENDING_VERIFICATION)
+  locale          String     @default("en-ZA")
+  timezone        String     @default("Africa/Johannesburg")
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt       DateTime?  @map("deleted_at") @db.Timestamptz(6)
+
+  passwordCredential  PasswordCredential?
+  webauthnCredentials WebauthnCredential[]
+  totpSecret          TotpSecret?
+  recoveryCodes       RecoveryCode[]
+  sessions            Session[]
+  refreshTokens       RefreshToken[]
+  devices             Device[]
+  roles               UserRole[]
+  organisationMembers OrganisationMember[]
+
+  @@index([status])
+  @@map("users")
+}
+
+model PasswordCredential {
+  id           String   @id @db.Uuid
+  userId       String   @unique @map("user_id") @db.Uuid
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_credentials")
+}
+
+model WebauthnCredential {
+  id           String    @id @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  credentialId String    @unique @map("credential_id")
+  publicKey    Bytes     @map("public_key")
+  signCount    BigInt    @default(0) @map("sign_count")
+  aaguid       String?
+  transports   Json?
+  deviceType   String?   @map("device_type")
+  backedUp     Boolean   @default(false) @map("backed_up")
+  deviceLabel  String    @map("device_label")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastUsedAt   DateTime? @map("last_used_at") @db.Timestamptz(6)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("webauthn_credentials")
+}
+
+model TotpSecret {
+  id          String     @id @db.Uuid
+  userId      String     @unique @map("user_id") @db.Uuid
+  /// [ENC] @dlv/crypto FieldCipher output; AAD = "totp:<userId>".
+  secretEnc   String     @map("secret_enc")
+  status      TotpStatus @default(PENDING)
+  confirmedAt DateTime?  @map("confirmed_at") @db.Timestamptz(6)
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("totp_secrets")
+}
+
+model RecoveryCode {
+  id        String    @id @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  /// Argon2id hash of the single-use recovery code (security-architecture §2.1).
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("recovery_codes")
+}
+
+model Session {
+  id          String    @id @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  deviceId    String?   @map("device_id") @db.Uuid
+  ip          String
+  ipMasked    String    @map("ip_masked")
+  userAgent   String    @map("user_agent")
+  deviceLabel String    @map("device_label")
+  /// Auth methods used to establish the session, e.g. ["pwd","totp"].
+  amr         Json
+  riskScore   Int       @default(0) @map("risk_score")
+  lastSeenAt  DateTime  @map("last_seen_at") @db.Timestamptz(6)
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device        Device?        @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  refreshTokens RefreshToken[]
+
+  @@index([userId, revokedAt])
+  @@map("sessions")
+}
+
+model RefreshToken {
+  id          String             @id @db.Uuid
+  sessionId   String             @map("session_id") @db.Uuid
+  userId      String             @map("user_id") @db.Uuid
+  /// Rotation family — reuse detection revokes the whole family (§2.3).
+  familyId    String             @map("family_id") @db.Uuid
+  /// SHA-256 hex of the opaque token; the raw token is never stored.
+  tokenHash   String             @unique @map("token_hash")
+  status      RefreshTokenStatus @default(ACTIVE)
+  rotatedToId String?            @map("rotated_to_id") @db.Uuid
+  expiresAt   DateTime           @map("expires_at") @db.Timestamptz(6)
+  createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@index([sessionId])
+  @@map("refresh_tokens")
+}
+
+model Device {
+  id              String     @id @db.Uuid
+  userId          String     @map("user_id") @db.Uuid
+  /// SHA-256 of coarse device signals (userId | user-agent); raw signals are
+  /// never persisted (security-architecture §2.4).
+  fingerprintHash String     @map("fingerprint_hash")
+  deviceKind      DeviceKind @default(BROWSER) @map("device_kind")
+  displayName     String     @map("display_name")
+  lastUsedAt      DateTime   @map("last_used_at") @db.Timestamptz(6)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  revokedAt       DateTime?  @map("revoked_at") @db.Timestamptz(6)
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@unique([userId, fingerprintHash])
+  @@map("devices")
+}
+
+model UserRole {
+  id        String       @id @db.Uuid
+  userId    String       @map("user_id") @db.Uuid
+  role      PlatformRole
+  grantedAt DateTime     @default(now()) @map("granted_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+  @@map("user_roles")
+}
+
+// ---------------------------------------------------------------------------
+// organisations (minimal in Phase 2 — FK stability for later phases)
+// ---------------------------------------------------------------------------
+
+model Organisation {
+  id                 String    @id @db.Uuid
+  name               String
+  orgType            OrgType   @map("org_type")
+  billingEmail       String    @map("billing_email")
+  /// Data-residency control (Phase 8): primary region for this organisation's
+  /// data. af-south-1 (default) or eu-west-1; enforcement is infra-level.
+  dataRegion         String    @default("af-south-1") @map("data_region")
+  verificationStatus String    @default("PENDING") @map("verification_status")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt          DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  members OrganisationMember[]
+
+  @@map("organisations")
+}
+
+model OrganisationMember {
+  id              String          @id @db.Uuid
+  organisationId  String          @map("organisation_id") @db.Uuid
+  userId          String          @map("user_id") @db.Uuid
+  role            OrgMemberRole   @default(MEMBER)
+  status          OrgMemberStatus @default(INVITED)
+  invitedByUserId String?         @map("invited_by_user_id") @db.Uuid
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organisationId, userId])
+  @@index([userId])
+  @@map("organisation_members")
+}
+
+// ---------------------------------------------------------------------------
+// audit context — append-only, hash-chained (PROJECT_MEMORY §7.4)
+// No FK to users: rows outlive users and actors may be pseudonymised on
+// erasure without breaking the chain.
+// ---------------------------------------------------------------------------
+
+model AuditEvent {
+  id          String   @id @db.Uuid
+  occurredAt  DateTime @map("occurred_at") @db.Timestamptz(6)
+  actorUserId String?  @map("actor_user_id") @db.Uuid
+  eventType   String   @map("event_type")
+  resource    String
+  ipMasked    String?  @map("ip_masked")
+  payload     Json
+  /// SHA-256 hex of the previous event's event_hash ('0' x 64 for genesis).
+  prevHash    String   @map("prev_hash")
+  /// sha256Hex(prev_hash + canonical_json(event)) — phase-2-contracts.
+  eventHash   String   @map("event_hash")
+
+  @@index([occurredAt])
+  @@index([actorUserId, occurredAt])
+  @@index([eventType, occurredAt])
+  @@map("audit_events")
+}
+
+// ---------------------------------------------------------------------------
+// Vault context (Phase 3 — document storage). See erd.md §Vault.
+// ---------------------------------------------------------------------------
+
+enum DocumentStatus {
+  PENDING_UPLOAD
+  SCANNING
+  READY
+  INFECTED
+  INVALID
+  FAILED
+
+  @@map("document_status")
+}
+
+enum ScanVerdict {
+  PENDING
+  CLEAN
+  INFECTED
+  ERROR
+
+  @@map("scan_verdict")
+}
+
+enum VaultKind {
+  STANDARD
+  CLIENT_ENCRYPTED
+
+  @@map("vault_kind")
+}
+
+model Vault {
+  id        String    @id @db.Uuid
+  ownerId   String    @map("owner_id") @db.Uuid
+  kind      VaultKind @default(STANDARD)
+  name      String
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  documents Document[]
+
+  @@index([ownerId])
+  @@map("vaults")
+}
+
+model DocumentCategory {
+  id        String     @id @db.Uuid
+  ownerId   String     @map("owner_id") @db.Uuid
+  name      String
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  documents Document[]
+
+  @@unique([ownerId, name])
+  @@map("document_categories")
+}
+
+model Tag {
+  id      String        @id @db.Uuid
+  ownerId String        @map("owner_id") @db.Uuid
+  label   String
+  links   DocumentTag[]
+
+  @@unique([ownerId, label])
+  @@map("tags")
+}
+
+model Document {
+  id             String         @id @db.Uuid
+  vaultId        String         @map("vault_id") @db.Uuid
+  ownerId        String         @map("owner_id") @db.Uuid
+  title          String
+  /// DocumentType enum from @dlv/shared-types (kept as text for AI-pipeline flexibility).
+  type           String
+  status         DocumentStatus @default(PENDING_UPLOAD)
+  categoryId     String?        @map("category_id") @db.Uuid
+  currentVersion Int            @default(0) @map("current_version")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  /// Postgres full-text search vector over title + tags + type (populated by a
+  /// trigger — see prisma/sql/vault-fts.sql; GIN-indexed there).
+  searchVector Unsupported("tsvector")? @map("search_vector")
+
+  vault    Vault             @relation(fields: [vaultId], references: [id], onDelete: Cascade)
+  category DocumentCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  versions DocumentVersion[]
+  tags     DocumentTag[]
+
+  @@index([ownerId, createdAt])
+  @@index([vaultId])
+  @@index([categoryId])
+  @@map("documents")
+}
+
+model DocumentVersion {
+  id          String      @id @db.Uuid
+  documentId  String      @map("document_id") @db.Uuid
+  version     Int
+  sizeBytes   BigInt      @map("size_bytes")
+  mimeType    String      @map("mime_type")
+  /// SHA-256 hex of the plaintext (integrity anchor recorded before promote, §7.5).
+  sha256      String
+  scanVerdict ScanVerdict @default(PENDING) @map("scan_verdict")
+  /// S3 object key of the promoted, envelope-encrypted content.
+  storageKey  String      @map("storage_key")
+  /// KMS-wrapped (or dev-KEK-wrapped) per-document DEK — never the plaintext key.
+  wrappedDek  String      @map("wrapped_dek")
+  /// AES-GCM IV + tag (base64) for the content blob.
+  contentIv   String      @map("content_iv")
+  contentTag  String      @map("content_tag")
+  /// Extracted OCR text (nullable until OCR runs); feeds FTS.
+  ocrText     String?     @map("ocr_text")
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, version])
+  @@map("document_versions")
+}
+
+model DocumentTag {
+  documentId String @map("document_id") @db.Uuid
+  tagId      String @map("tag_id") @db.Uuid
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tag      Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([documentId, tagId])
+  @@map("document_tags")
+}
+
+model ClientVaultItem {
+  id         String   @id @db.Uuid
+  ownerId    String   @map("owner_id") @db.Uuid
+  label      String
+  /// Client-side AES-256-GCM ciphertext (base64). Server is zero-knowledge.
+  ciphertext String
+  iv         String
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ownerId])
+  @@map("client_vault_items")
+}
+
+// ---------------------------------------------------------------------------
+// Sharing context (Phase 4). See erd.md §Sharing.
+// ---------------------------------------------------------------------------
+
+enum SharePermission {
+  VIEW
+  DOWNLOAD
+
+  @@map("share_permission")
+}
+
+enum ShareStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+
+  @@map("share_status")
+}
+
+enum AccessRequestStatus {
+  PENDING
+  APPROVED
+  DENIED
+
+  @@map("access_request_status")
+}
+
+model DocumentShare {
+  id            String          @id @db.Uuid
+  documentId    String          @map("document_id") @db.Uuid
+  ownerId       String          @map("owner_id") @db.Uuid
+  recipientId   String?         @map("recipient_id") @db.Uuid
+  recipientEmail String         @map("recipient_email")
+  permission    SharePermission @default(VIEW)
+  status        ShareStatus     @default(ACTIVE)
+  expiresAt     DateTime?       @map("expires_at") @db.Timestamptz(6)
+  createdAt     DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  revokedAt     DateTime?       @map("revoked_at") @db.Timestamptz(6)
+
+  @@index([ownerId])
+  @@index([recipientId])
+  @@index([documentId])
+  @@map("document_shares")
+}
+
+model SecureLink {
+  id          String      @id @db.Uuid
+  documentId  String      @map("document_id") @db.Uuid
+  ownerId     String      @map("owner_id") @db.Uuid
+  /// SHA-256 of the opaque link token; the raw token is shown once and never stored.
+  tokenHash   String      @unique @map("token_hash")
+  permission  SharePermission @default(VIEW)
+  status      ShareStatus @default(ACTIVE)
+  maxViews    Int?        @map("max_views")
+  viewCount   Int         @default(0) @map("view_count")
+  expiresAt   DateTime    @map("expires_at") @db.Timestamptz(6)
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  revokedAt   DateTime?   @map("revoked_at") @db.Timestamptz(6)
+
+  @@index([ownerId])
+  @@index([documentId])
+  @@map("secure_links")
+}
+
+model AccessRequest {
+  id          String              @id @db.Uuid
+  documentId  String              @map("document_id") @db.Uuid
+  ownerId     String              @map("owner_id") @db.Uuid
+  requesterId String              @map("requester_id") @db.Uuid
+  message     String?
+  status      AccessRequestStatus @default(PENDING)
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  decidedAt   DateTime?           @map("decided_at") @db.Timestamptz(6)
+
+  @@index([ownerId, status])
+  @@index([requesterId])
+  @@map("access_requests")
+}
+
+// ---------------------------------------------------------------------------
+// Estate context (Phase 4). Emergency access per invariant §7.6 + policy §9.
+// ---------------------------------------------------------------------------
+
+enum RelationshipRole {
+  EXECUTOR
+  BENEFICIARY
+  LAWYER
+  DOCTOR
+  HOSPITAL_ADMIN
+  FINANCIAL_ADVISER
+
+  @@map("relationship_role")
+}
+
+enum EmergencyScope {
+  FULL
+  CATEGORY
+  MEDICAL_ONLY
+
+  @@map("emergency_scope")
+}
+
+enum EmergencyStatus {
+  REQUESTED
+  APPROVED
+  DELAY_ELAPSED
+  ACTIVE
+  DENIED
+  CANCELLED
+  EXPIRED
+
+  @@map("emergency_status")
+}
+
+enum DeathVerificationStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  VERIFIED
+  REJECTED
+
+  @@map("death_verification_status")
+}
+
+model Beneficiary {
+  id           String           @id @db.Uuid
+  ownerId      String           @map("owner_id") @db.Uuid
+  personId     String?          @map("person_id") @db.Uuid
+  fullName     String           @map("full_name")
+  email        String
+  relationship String
+  role         RelationshipRole @default(BENEFICIARY)
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ownerId])
+  @@map("beneficiaries")
+}
+
+model Executor {
+  id        String           @id @db.Uuid
+  ownerId   String           @map("owner_id") @db.Uuid
+  personId  String?          @map("person_id") @db.Uuid
+  fullName  String           @map("full_name")
+  email     String
+  role      RelationshipRole @default(EXECUTOR)
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ownerId])
+  @@map("executors")
+}
+
+model EmergencyAccessRequest {
+  id            String          @id @db.Uuid
+  ownerId       String          @map("owner_id") @db.Uuid
+  requesterId   String          @map("requester_id") @db.Uuid
+  scope         EmergencyScope  @default(FULL)
+  /// Owner-preselected categories this grant is limited to (scope = CATEGORY).
+  categoryIds   String[]        @map("category_ids") @db.Uuid
+  reason        String
+  isDeathClaim  Boolean         @default(false) @map("is_death_claim")
+  status        EmergencyStatus @default(REQUESTED)
+  /// When the time-delay window elapses and the grant may activate.
+  delayUntil    DateTime        @map("delay_until") @db.Timestamptz(6)
+  createdAt     DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  decidedAt     DateTime?       @map("decided_at") @db.Timestamptz(6)
+
+  approvals EmergencyApproval[]
+  grant     EmergencyAccessGrant?
+
+  @@index([ownerId, status])
+  @@index([requesterId])
+  @@map("emergency_access_requests")
+}
+
+model EmergencyApproval {
+  id         String   @id @db.Uuid
+  requestId  String   @map("request_id") @db.Uuid
+  approverId String   @map("approver_id") @db.Uuid
+  /// True when the approver is a medical professional (needed for MEDICAL_ONLY expedite).
+  medical    Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  request EmergencyAccessRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, approverId])
+  @@map("emergency_approvals")
+}
+
+model EmergencyAccessGrant {
+  id          String          @id @db.Uuid
+  requestId   String          @unique @map("request_id") @db.Uuid
+  granteeId   String          @map("grantee_id") @db.Uuid
+  ownerId     String          @map("owner_id") @db.Uuid
+  scope       EmergencyScope
+  categoryIds String[]        @map("category_ids") @db.Uuid
+  /// Read-only, time-boxed access window (default 30 days, §9).
+  expiresAt   DateTime        @map("expires_at") @db.Timestamptz(6)
+  revokedAt   DateTime?       @map("revoked_at") @db.Timestamptz(6)
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  request EmergencyAccessRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([granteeId])
+  @@index([ownerId])
+  @@map("emergency_access_grants")
+}
+
+model DeathVerification {
+  id            String                  @id @db.Uuid
+  subjectUserId String                  @map("subject_user_id") @db.Uuid
+  claimantId    String                  @map("claimant_id") @db.Uuid
+  /// Uploaded evidence document ids (e.g. death certificate) for manual review.
+  evidenceDocIds String[]               @map("evidence_doc_ids") @db.Uuid
+  status        DeathVerificationStatus @default(SUBMITTED)
+  reviewerId    String?                 @map("reviewer_id") @db.Uuid
+  reviewNotes   String?                 @map("review_notes")
+  createdAt     DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  decidedAt     DateTime?               @map("decided_at") @db.Timestamptz(6)
+
+  @@index([subjectUserId, status])
+  @@map("death_verifications")
+}
+
+// ---------------------------------------------------------------------------
+// Signature context (Phase 5 — ECTA-compliant signing + evidence). See
+// PROJECT_MEMORY §2.9, roadmap Phase 5. A SignatureRequest asks a signer to
+// sign a READY vault document; a completed ceremony produces a Signature whose
+// cryptographic seal (SHA-256 evidence digest + RFC 3161 timestamp) preserves
+// evidence of who signed what, when, and with what consent.
+// ---------------------------------------------------------------------------
+
+enum SignatureRequestStatus {
+  DRAFT
+  PENDING
+  COMPLETED
+  DECLINED
+  CANCELLED
+  EXPIRED
+
+  @@map("signature_request_status")
+}
+
+enum SignatureMethod {
+  DRAW
+  TYPE
+  UPLOAD
+
+  @@map("signature_method")
+}
+
+model SignatureRequest {
+  id           String                 @id @db.Uuid
+  documentId   String                 @map("document_id") @db.Uuid
+  ownerId      String                 @map("owner_id") @db.Uuid
+  title        String
+  message      String?
+  status       SignatureRequestStatus @default(PENDING)
+  signerUserId String?                @map("signer_user_id") @db.Uuid
+  signerName   String                 @map("signer_name")
+  signerEmail  String                 @map("signer_email")
+  expiresAt    DateTime               @map("expires_at") @db.Timestamptz(6)
+  createdAt    DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
+  completedAt  DateTime?              @map("completed_at") @db.Timestamptz(6)
+
+  signatures Signature[]
+
+  @@index([ownerId, createdAt])
+  @@index([documentId])
+  @@index([status])
+  @@map("signature_requests")
+}
+
+model Signature {
+  id           String          @id @db.Uuid
+  requestId    String          @map("request_id") @db.Uuid
+  signerUserId String          @map("signer_user_id") @db.Uuid
+  method       SignatureMethod
+  signatureImageSha256  String @map("signature_image_sha256")
+  consentText       String     @map("consent_text")
+  consentAcceptedAt DateTime   @map("consent_accepted_at") @db.Timestamptz(6)
+  documentVersionSha256 String @map("document_version_sha256")
+  sealDigest    String         @map("seal_digest")
+  sealAlgorithm String         @default("SHA-256") @map("seal_algorithm")
+  tsaAuthority  String         @map("tsa_authority")
+  tsaToken      String         @map("tsa_token")
+  tsaGenTime    DateTime       @map("tsa_gen_time") @db.Timestamptz(6)
+  tsaImprintAlg String         @default("SHA-256") @map("tsa_imprint_alg")
+  evidence      Json
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  request SignatureRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId])
+  @@index([signerUserId])
+  @@map("signatures")
+}
+
+// ---------------------------------------------------------------------------
+// Compliance context (Phase 5). First-class consent records, legal holds, and
+// POPIA/GDPR data-subject requests. See PROJECT_MEMORY §Phase 5, roadmap.
+// ---------------------------------------------------------------------------
+
+enum ConsentPurpose {
+  ELECTRONIC_SIGNATURE
+  DATA_PROCESSING
+  MARKETING
+  TERMS_OF_SERVICE
+  EMERGENCY_ACCESS_DISCLOSURE
+
+  @@map("consent_purpose")
+}
+
+enum ConsentStatus {
+  GRANTED
+  WITHDRAWN
+
+  @@map("consent_status")
+}
+
+/// A first-class, immutable record of a consent grant or withdrawal (POPIA §11
+/// / GDPR art. 7). Signature ceremonies also emit an ELECTRONIC_SIGNATURE
+/// consent bound to the sealed signature via `sourceContext`.
+model Consent {
+  id               String        @id @db.Uuid
+  userId           String        @map("user_id") @db.Uuid
+  purpose          ConsentPurpose
+  status           ConsentStatus @default(GRANTED)
+  statementText    String        @map("statement_text")
+  statementVersion String        @default("1") @map("statement_version")
+  /// Originating context, e.g. `signature:<id>` or `registration`.
+  sourceContext    String?       @map("source_context")
+  ipMasked         String?       @map("ip_masked")
+  userAgent        String?       @map("user_agent")
+  grantedAt        DateTime      @map("granted_at") @db.Timestamptz(6)
+  withdrawnAt      DateTime?     @map("withdrawn_at") @db.Timestamptz(6)
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, purpose])
+  @@index([userId, createdAt])
+  @@map("consents")
+}
+
+enum LegalHoldScope {
+  USER
+  VAULT
+  DOCUMENT
+
+  @@map("legal_hold_scope")
+}
+
+enum LegalHoldStatus {
+  ACTIVE
+  RELEASED
+
+  @@map("legal_hold_status")
+}
+
+/// A legal hold freezes deletion/retention overrides for its scope while ACTIVE
+/// (litigation hold / regulatory preservation). Enforced by the data-subject
+/// erasure path, which refuses to erase anything a hold covers.
+model LegalHold {
+  id               String          @id @db.Uuid
+  scopeType        LegalHoldScope  @map("scope_type")
+  scopeId          String          @map("scope_id") @db.Uuid
+  reason           String
+  reference        String?
+  status           LegalHoldStatus @default(ACTIVE)
+  placedByUserId   String          @map("placed_by_user_id") @db.Uuid
+  placedAt         DateTime        @map("placed_at") @db.Timestamptz(6)
+  releasedByUserId String?         @map("released_by_user_id") @db.Uuid
+  releasedAt       DateTime?       @map("released_at") @db.Timestamptz(6)
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([scopeType, scopeId, status])
+  @@index([status])
+  @@map("legal_holds")
+}
+
+enum DataSubjectRequestType {
+  EXPORT
+  ERASURE
+
+  @@map("data_subject_request_type")
+}
+
+enum DataSubjectRequestStatus {
+  PENDING
+  COMPLETED
+  REFUSED
+
+  @@map("data_subject_request_status")
+}
+
+/// Audit trail of POPIA/GDPR data-subject requests (access/portability and
+/// erasure). ERASURE is REFUSED when an active LegalHold covers the subject.
+model DataSubjectRequest {
+  id          String                   @id @db.Uuid
+  userId      String                   @map("user_id") @db.Uuid
+  type        DataSubjectRequestType
+  status      DataSubjectRequestStatus @default(PENDING)
+  /// Free-text outcome detail, e.g. the refusal reason (holds referenced).
+  detail      String?
+  requestedAt DateTime                 @map("requested_at") @db.Timestamptz(6)
+  completedAt DateTime?                @map("completed_at") @db.Timestamptz(6)
+  createdAt   DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, createdAt])
+  @@map("data_subject_requests")
+}
+
+// ---------------------------------------------------------------------------
+// Billing context (Phase 6). Plans are a config-driven catalog in code
+// (FR-BIL-001 — quotas are configuration, not rows); Subscription is the stateful
+// record. Stripe is the payment gateway. Dunning: 14-day grace → read-only (§9).
+// ---------------------------------------------------------------------------
+
+enum PlanTier {
+  FREE
+  PREMIUM
+  FAMILY
+  PROFESSIONAL
+  ENTERPRISE
+
+  @@map("plan_tier")
+}
+
+enum BillingInterval {
+  MONTH
+  YEAR
+
+  @@map("billing_interval")
+}
+
+enum BillingCurrency {
+  ZAR
+  USD
+  EUR
+
+  @@map("billing_currency")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  GRACE
+  CANCELED
+  INCOMPLETE
+
+  @@map("subscription_status")
+}
+
+model Subscription {
+  id                   String             @id @db.Uuid
+  userId               String             @unique @map("user_id") @db.Uuid
+  tier                 PlanTier           @default(FREE)
+  status               SubscriptionStatus @default(ACTIVE)
+  interval             BillingInterval    @default(MONTH)
+  currency             BillingCurrency    @default(ZAR)
+  seats                Int                @default(1)
+  stripeCustomerId     String?            @map("stripe_customer_id")
+  stripeSubscriptionId String?            @map("stripe_subscription_id")
+  currentPeriodEnd     DateTime?          @map("current_period_end") @db.Timestamptz(6)
+  cancelAtPeriodEnd    Boolean            @default(false) @map("cancel_at_period_end")
+  /// Set when a payment fails; writes go read-only, never deleted (§9 dunning).
+  graceUntil           DateTime?          @map("grace_until") @db.Timestamptz(6)
+  createdAt            DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@map("subscriptions")
+}
+
+// ---------------------------------------------------------------------------
+// Notification context (Phase 6). Multi-channel fabric: email (SES), SMS +
+// WhatsApp (Twilio), web push (PWA). Per-category preferences; EMERGENCY and
+// SECURITY categories are non-disableable. Reminders drive proactive nudges.
+// ---------------------------------------------------------------------------
+
+enum NotificationCategory {
+  SECURITY
+  EMERGENCY_ACCESS
+  SHARING
+  SIGNATURE
+  BILLING
+  REMINDER
+  PRODUCT
+
+  @@map("notification_category")
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  WHATSAPP
+  PUSH
+
+  @@map("notification_channel")
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+  READ
+
+  @@map("notification_status")
+}
+
+enum ReminderStatus {
+  SCHEDULED
+  FIRED
+  CANCELLED
+
+  @@map("reminder_status")
+}
+
+model Notification {
+  id        String               @id @db.Uuid
+  userId    String               @map("user_id") @db.Uuid
+  category  NotificationCategory
+  channel   NotificationChannel
+  subject   String
+  body      String
+  status    NotificationStatus   @default(QUEUED)
+  sentAt    DateTime?            @map("sent_at") @db.Timestamptz(6)
+  readAt    DateTime?            @map("read_at") @db.Timestamptz(6)
+  createdAt DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  id       String               @id @db.Uuid
+  userId   String               @map("user_id") @db.Uuid
+  category NotificationCategory
+  email    Boolean              @default(true)
+  sms      Boolean              @default(false)
+  whatsapp Boolean              @default(false)
+  push     Boolean              @default(true)
+
+  @@unique([userId, category])
+  @@map("notification_preferences")
+}
+
+model Reminder {
+  id        String         @id @db.Uuid
+  userId    String         @map("user_id") @db.Uuid
+  title     String
+  body      String?
+  dueAt     DateTime       @map("due_at") @db.Timestamptz(6)
+  /// Optional recurrence in days (null = one-off).
+  cadenceDays Int?         @map("cadence_days")
+  status    ReminderStatus @default(SCHEDULED)
+  lastFiredAt DateTime?    @map("last_fired_at") @db.Timestamptz(6)
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([status, dueAt])
+  @@index([userId, dueAt])
+  @@map("reminders")
+}
+
+model PushSubscription {
+  id        String   @id @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  endpoint  String   @unique
+  /// Web Push keys (base64url) from the browser PushSubscription.
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+// --- AI (Phase 7 — classification, summaries, recommendations, NL search) ----
+
+enum AiFeature {
+  CLASSIFICATION
+  SUMMARY
+  SEARCH
+  RECOMMENDATION
+
+  @@map("ai_feature")
+}
+
+/// Per-user AI preference (disclosure + opt-out). Absent row = AI enabled.
+model AiPreference {
+  userId    String   @id @map("user_id") @db.Uuid
+  aiEnabled Boolean  @default(true) @map("ai_enabled")
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("ai_preferences")
+}
+
+/// A stored classification + summary for one document. `suggestedType` is a
+/// DocumentType literal (kept as text, matching documents.type).
+model AiInsight {
+  id            String    @id @db.Uuid
+  documentId    String    @map("document_id") @db.Uuid
+  ownerId       String    @map("owner_id") @db.Uuid
+  suggestedType String    @map("suggested_type")
+  confidence    Float
+  summary       String
+  model         String
+  appliedAt     DateTime? @map("applied_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ownerId, createdAt])
+  @@index([documentId, createdAt])
+  @@map("ai_insights")
+}
+
+/// AI telemetry: one row per AI request (cost-per-request budgets, Phase 7 exit).
+/// INVARIANT: documentId only ever references server-processable (STANDARD-vault)
+/// documents — client-encrypted objects are excluded before any telemetry write.
+model AiUsage {
+  id           String    @id @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  feature      AiFeature
+  documentId   String?   @map("document_id") @db.Uuid
+  model        String
+  inputTokens  Int       @map("input_tokens")
+  outputTokens Int       @map("output_tokens")
+  costMicroUsd Int       @map("cost_micro_usd")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([userId, createdAt])
+  @@map("ai_usage")
+}
+
+// --- organisation workspaces & integrations (Phase 8) ------------------------
+
+enum ClientRelationshipStatus {
+  PENDING
+  ACTIVE
+  DECLINED
+  REVOKED
+
+  @@map("client_relationship_status")
+}
+
+/// A professional (LAWYER/DOCTOR/FINANCIAL_ADVISER member of an organisation)
+/// granted scoped, consent-gated read access to a client's vault. The client
+/// must accept (POPIA consent); scope reuses EmergencyScope semantics.
+model ClientRelationship {
+  id                 String                   @id @db.Uuid
+  organisationId     String                   @map("organisation_id") @db.Uuid
+  professionalUserId String                   @map("professional_user_id") @db.Uuid
+  clientUserId       String                   @map("client_user_id") @db.Uuid
+  role               OrgMemberRole
+  scope              EmergencyScope           @default(FULL)
+  categoryIds        String[]                 @map("category_ids") @db.Uuid
+  status             ClientRelationshipStatus @default(PENDING)
+  createdAt          DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  respondedAt        DateTime?                @map("responded_at") @db.Timestamptz(6)
+  revokedAt          DateTime?                @map("revoked_at") @db.Timestamptz(6)
+
+  @@unique([organisationId, professionalUserId, clientUserId])
+  @@index([clientUserId, status])
+  @@index([professionalUserId, status])
+  @@map("client_relationships")
+}
+
+/// Per-organisation enterprise SSO connection (OAuth2/OIDC; SAML later, §3).
+model SsoConnection {
+  id                    String        @id @db.Uuid
+  organisationId        String        @unique @map("organisation_id") @db.Uuid
+  issuerUrl             String        @map("issuer_url")
+  clientId              String        @map("client_id")
+  /// Field-encrypted OAuth2 client secret (PROJECT_MEMORY §7.3).
+  clientSecretEnc       String        @map("client_secret_enc")
+  authorizationEndpoint String        @map("authorization_endpoint")
+  tokenEndpoint         String        @map("token_endpoint")
+  userinfoEndpoint      String        @map("userinfo_endpoint")
+  /// Email domains routed to this connection (lowercase, no @).
+  emailDomains          String[]      @map("email_domains")
+  defaultMemberRole     OrgMemberRole @default(MEMBER) @map("default_member_role")
+  enabled               Boolean       @default(true)
+  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([enabled])
+  @@map("sso_connections")
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+
+  @@map("api_key_status")
+}
+
+/// Partner-API key (Phase 8 integration context). Only the SHA-256 hash of the
+/// secret is stored; `prefix` is the public identifier shown in the UI.
+model ApiKey {
+  id             String       @id @db.Uuid
+  ownerUserId    String       @map("owner_user_id") @db.Uuid
+  organisationId String?      @map("organisation_id") @db.Uuid
+  name           String
+  prefix         String       @unique
+  keyHash        String       @unique @map("key_hash")
+  scopes         String[]
+  status         ApiKeyStatus @default(ACTIVE)
+  expiresAt      DateTime?    @map("expires_at") @db.Timestamptz(6)
+  lastUsedAt     DateTime?    @map("last_used_at") @db.Timestamptz(6)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ownerUserId])
+  @@map("api_keys")
+}
+
+enum WebhookStatus {
+  ACTIVE
+  DISABLED
+
+  @@map("webhook_status")
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+  DEAD
+
+  @@map("webhook_delivery_status")
+}
+
+/// Outbound webhook endpoint. The signing secret is field-encrypted (it is
+/// needed server-side to sign deliveries — never exposed after creation).
+model Webhook {
+  id             String        @id @db.Uuid
+  ownerUserId    String        @map("owner_user_id") @db.Uuid
+  organisationId String?       @map("organisation_id") @db.Uuid
+  url            String
+  secretEnc      String        @map("secret_enc")
+  /// Subscribed event types (dotted, e.g. `document.ready`).
+  events         String[]
+  status         WebhookStatus @default(ACTIVE)
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  deliveries WebhookDelivery[]
+
+  @@index([ownerUserId])
+  @@map("webhooks")
+}
+
+/// One delivery attempt-tracked payload for a webhook (signed, retried with
+/// exponential backoff until DELIVERED or DEAD — Phase 8 exit: ≥99.9%/5 min).
+model WebhookDelivery {
+  id             String                @id @db.Uuid
+  webhookId      String                @map("webhook_id") @db.Uuid
+  eventType      String                @map("event_type")
+  payloadJson    String                @map("payload_json")
+  status         WebhookDeliveryStatus @default(PENDING)
+  attempts       Int                   @default(0)
+  nextAttemptAt  DateTime              @map("next_attempt_at") @db.Timestamptz(6)
+  responseStatus Int?                  @map("response_status")
+  lastError      String?               @map("last_error")
+  deliveredAt    DateTime?             @map("delivered_at") @db.Timestamptz(6)
+  createdAt      DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([webhookId, createdAt])
+  @@map("webhook_deliveries")
+}

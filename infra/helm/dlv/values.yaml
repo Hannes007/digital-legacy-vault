@@ -1,0 +1,203 @@
+# =============================================================================
+# dlv umbrella chart — default values
+#
+# Both workloads run hardened (non-root, read-only rootfs, all caps dropped) and
+# read secrets from Kubernetes Secrets synced by External Secrets Operator from
+# AWS Secrets Manager (invariant §7.7). Image tags are bumped in
+# infra/helm/values/dev.yaml by the deploy-dev GitOps workflow.
+# =============================================================================
+
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  # ECR registry host, e.g. <account>.dkr.ecr.af-south-1.amazonaws.com
+  imageRegistry: ""
+
+# ---------------------------------------------------------------------------
+# API (NestJS) — /api/v1, port 4000
+# ---------------------------------------------------------------------------
+api:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: dlv/api
+    tag: ""          # defaults to .Chart.AppVersion; overridden by GitOps bump
+    pullPolicy: IfNotPresent
+  containerPort: 4000
+  service:
+    type: ClusterIP
+    port: 4000
+  serviceAccount:
+    create: true
+    name: ""
+    # IRSA role ARN (e.g. app access to S3/Secrets); set per-env.
+    roleArn: ""
+  # Non-secret config → ConfigMap.
+  config:
+    NODE_ENV: production
+    PORT: "4000"
+    API_PREFIX: /api/v1
+  # Name of the ES-synced Secret providing DATABASE_URL, REDIS_URL, JWT keys, etc.
+  existingSecret: dlv-api-secrets
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+  probes:
+    liveness:
+      path: /api/v1/health/live
+    readiness:
+      path: /api/v1/health/ready
+
+# ---------------------------------------------------------------------------
+# Web (Next.js) — port 3000
+# ---------------------------------------------------------------------------
+web:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: dlv/web
+    tag: ""
+    pullPolicy: IfNotPresent
+  containerPort: 3000
+  service:
+    type: ClusterIP
+    port: 3000
+  serviceAccount:
+    create: true
+    name: ""
+    roleArn: ""
+  config:
+    NODE_ENV: production
+    PORT: "3000"
+  existingSecret: dlv-web-secrets
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+  probes:
+    liveness:
+      path: /
+    readiness:
+      path: /
+
+# ---------------------------------------------------------------------------
+# Worker (BullMQ) — upload scan/promote, audit export, notifications; port 4001
+# ---------------------------------------------------------------------------
+worker:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: dlv/workers
+    tag: ""
+    pullPolicy: IfNotPresent
+  containerPort: 4001
+  serviceAccount:
+    create: true
+    name: ""
+    roleArn: ""
+  config:
+    NODE_ENV: production
+    WORKERS_PORT: "4001"
+  existingSecret: dlv-worker-secrets
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  pdb:
+    enabled: true
+    minAvailable: 1
+  probes:
+    liveness:
+      path: /health/live
+    readiness:
+      path: /health/ready
+
+# ---------------------------------------------------------------------------
+# Database migrations — Argo CD PreSync hook (Job), runs `prisma migrate deploy`
+# with the api image before app pods roll. App pods never migrate.
+# ---------------------------------------------------------------------------
+migrations:
+  enabled: true
+  backoffLimit: 3
+  command: ["npx", "prisma", "migrate", "deploy"]
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Ingress — single ALB, TLS via ACM; / → web, /api → api
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: alb
+  host: dlv.stellr-net.com
+  # ACM certificate ARN for the ALB HTTPS listener.
+  certificateArn: ""
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+
+# ---------------------------------------------------------------------------
+# ClamAV (clamd) for the upload-scan step. API/worker reach it at dlv-clamav:3310.
+# ---------------------------------------------------------------------------
+clamav:
+  enabled: true
+  image:
+    repository: clamav/clamav
+    tag: "1.4"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+# ---------------------------------------------------------------------------
+# Default-deny NetworkPolicy with explicit allows.
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  # Namespace label the ingress controller (AWS LB Controller) runs under.
+  ingressControllerNamespace: kube-system

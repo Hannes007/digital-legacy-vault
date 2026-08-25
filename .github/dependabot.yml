@@ -1,0 +1,57 @@
+# =============================================================================
+# dependabot.yml — weekly, grouped updates
+# npm (pnpm workspace), GitHub Actions (keeps pinned SHAs fresh), Docker bases.
+# =============================================================================
+version: 2
+
+updates:
+  # pnpm workspace — single lockfile at the repo root covers apps/* + packages/*
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Africa/Johannesburg
+    open-pull-requests-limit: 10
+    versioning-strategy: increase
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+      npm-security:
+        applies-to: security-updates
+        patterns: ['*']
+    labels: [dependencies, npm]
+    commit-message:
+      prefix: 'chore(deps)'
+
+  # GitHub Actions — updates the pinned commit SHAs (with version comments)
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Africa/Johannesburg
+    groups:
+      gha-all:
+        patterns: ['*']
+    labels: [dependencies, github-actions]
+    commit-message:
+      prefix: 'chore(ci)'
+
+  # Docker base images (docker/<app>.Dockerfile per folder-structure.md)
+  - package-ecosystem: docker
+    directory: '/docker'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Africa/Johannesburg
+    groups:
+      docker-all:
+        patterns: ['*']
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: 'chore(deps)'

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Same rationale as apps/api: NestJS 11 + ts-jest are CommonJS-first, so we
+    // override the base NodeNext/ESM settings while keeping strictness in force.
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "declaration": false,
+    "declarationMap": false,
+    "outDir": "dist",
+    "baseUrl": ".",
+    "types": ["node", "jest"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist", "node_modules"]
+}

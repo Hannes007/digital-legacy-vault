@@ -1,0 +1,218 @@
+# =============================================================================
+# terraform.yml — IaC checks, plan-on-PR, gated apply
+#
+# Design source: docs/06-engineering/cicd-pipeline.md §6
+#
+#   PR touching infra/terraform/** : fmt-check → validate → tflint → checkov
+#                                    → terraform plan (dev, OIDC) → PR comment
+#   push to main                   : terraform apply (dev), gated by the
+#                                    GitHub environment `dev-infra` (approval
+#                                    rules configured in repo settings)
+#
+# Security posture:
+#   - OIDC-only AWS access; separate plan (read-only) and apply roles created
+#     by infra/terraform/bootstrap. No stored AWS keys.
+#   - Plan role can read state + describe resources; only the apply role can
+#     mutate, and only behind the environment gate.
+#   - Plan output is truncated and secrets are never printed (no tfvars with
+#     secrets exist — secrets live in AWS Secrets Manager, invariant §7.7).
+# =============================================================================
+name: terraform
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/terraform.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/terraform.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialise per-ref; never cancel an in-flight apply.
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TF_VERSION: 1.9.8
+  AWS_REGION: af-south-1
+  TF_IN_AUTOMATION: 'true'
+  ENV_DIR: infra/terraform/envs/dev
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Static checks — no cloud credentials needed
+  # ---------------------------------------------------------------------------
+  static-checks:
+    name: fmt + validate + tflint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive -diff infra/terraform
+      - name: terraform validate (all roots and modules)
+        run: |
+          set -euo pipefail
+          for dir in infra/terraform/bootstrap infra/terraform/envs/dev; do
+            echo "::group::validate ${dir}"
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+            echo "::endgroup::"
+          done
+      - uses: terraform-linters/setup-tflint@b480b8fcdaa6f2c577f8e4fa799e89e756bb7c93 # v6.2.2
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --recursive --chdir=infra/terraform --format=compact
+
+  checkov:
+    name: checkov policy scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install checkov
+        run: pip install --disable-pip-version-check "checkov~=3.2"
+      - name: Run checkov (blocking; exceptions in infra/terraform/.checkov.yaml)
+        run: |
+          checkov --directory infra/terraform \
+            --config-file infra/terraform/.checkov.yaml \
+            --compact
+
+  # ---------------------------------------------------------------------------
+  # Plan on PR — read-only OIDC role, result posted as a PR comment
+  # ---------------------------------------------------------------------------
+  plan-dev:
+    name: plan (dev)
+    if: github.event_name == 'pull_request'
+    needs: [static-checks, checkov]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # OIDC to AWS
+      pull-requests: write # plan comment
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Configure AWS credentials (OIDC, plan role)
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_DEV_ACCOUNT_ID }}:role/dlv-gha-terraform-plan-dev
+          role-session-name: gha-tf-plan-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: terraform init
+        run: |
+          terraform -chdir="$ENV_DIR" init -input=false \
+            -backend-config="bucket=dlv-terraform-state-${{ vars.AWS_DEV_ACCOUNT_ID }}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=dlv-terraform-locks"
+      - name: terraform plan
+        id: plan
+        run: |
+          set +e
+          terraform -chdir="$ENV_DIR" plan -input=false -no-color \
+            -detailed-exitcode -out=tfplan 2>&1 | tee plan.txt
+          code=${PIPESTATUS[0]}
+          # -detailed-exitcode: 0 = no changes, 2 = changes, 1 = error
+          echo "exitcode=${code}" >> "$GITHUB_OUTPUT"
+          if [ "$code" -eq 1 ]; then exit 1; fi
+      - name: Post plan as PR comment
+        uses: actions/github-script@v7
+        env:
+          PLAN_EXITCODE: ${{ steps.plan.outputs.exitcode }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- dlv-terraform-plan-dev -->';
+            let plan = fs.readFileSync('plan.txt', 'utf8');
+            const limit = 60000; // stay under the 65k comment cap
+            if (plan.length > limit) {
+              plan = plan.slice(0, limit) +
+                '\n\n... (truncated — see the workflow run for the full plan)';
+            }
+            const status = process.env.PLAN_EXITCODE === '0'
+              ? 'No changes.' : 'Changes detected — review before merge.';
+            const body = [
+              marker,
+              '### Terraform plan — `envs/dev` (af-south-1)',
+              `**${status}**`,
+              '',
+              '<details><summary>Show plan output</summary>',
+              '',
+              '```hcl',
+              plan,
+              '```',
+              '',
+              '</details>',
+              '',
+              `_Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}_`,
+            ].join('\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.issue.number, per_page: 100,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo, issue_number: context.issue.number, body,
+              });
+            }
+
+  # ---------------------------------------------------------------------------
+  # Apply on main — gated by the `dev-infra` GitHub environment (required
+  # reviewers are configured on the environment, not in this file).
+  # ---------------------------------------------------------------------------
+  apply-dev:
+    name: apply (dev)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [static-checks, checkov]
+    runs-on: ubuntu-24.04
+    environment: dev-infra
+    permissions:
+      contents: read
+      id-token: write # OIDC to AWS
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Configure AWS credentials (OIDC, apply role)
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_DEV_ACCOUNT_ID }}:role/dlv-gha-terraform-apply-dev
+          role-session-name: gha-tf-apply-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: terraform init
+        run: |
+          terraform -chdir="$ENV_DIR" init -input=false \
+            -backend-config="bucket=dlv-terraform-state-${{ vars.AWS_DEV_ACCOUNT_ID }}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=dlv-terraform-locks"
+      # Plan is re-run inside the gated job so approvers approve exactly what
+      # will be applied (the PR plan may be stale by merge time).
+      - name: terraform plan (pre-apply)
+        run: terraform -chdir="$ENV_DIR" plan -input=false -out=tfplan
+      - name: terraform apply
+        run: terraform -chdir="$ENV_DIR" apply -input=false tfplan

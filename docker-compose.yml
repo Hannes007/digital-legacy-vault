@@ -1,0 +1,42 @@
+# Digital Legacy Vault — local development dependencies (Phase 2).
+# Brings up the Postgres + Redis the API expects. Matches the defaults in
+# apps/api/.env.example (postgresql://dlv:dlv@localhost:5432/dlv, redis://localhost:6379).
+#
+#   docker compose up -d
+#   pnpm --filter @dlv/api db:migrate:dev   # apply migrations
+#   pnpm --filter @dlv/api dev              # run the API
+services:
+  postgres:
+    image: postgres:16
+    container_name: dlv-postgres
+    environment:
+      POSTGRES_USER: dlv
+      POSTGRES_PASSWORD: dlv
+      POSTGRES_DB: dlv
+    ports:
+      - '5432:5432'
+    volumes:
+      - dlv-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U dlv -d dlv']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: dlv-redis
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - dlv-redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  dlv-postgres-data:
+  dlv-redis-data:

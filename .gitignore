@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Builds
+dist/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+.turbo/
+
+# Environment — never commit secrets (security invariant 7)
+.env
+.env.*
+!.env.example
+
+# Prisma
+apps/api/prisma/*.db
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.example.tfvars
+.terraform.lock.hcl
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test artefacts
+playwright-report/
+test-results/

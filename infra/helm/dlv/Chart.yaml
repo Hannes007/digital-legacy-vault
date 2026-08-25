@@ -1,0 +1,13 @@
+apiVersion: v2
+name: dlv
+description: Digital Legacy Vault umbrella chart (api + web) for GitOps delivery via Argo CD.
+type: application
+version: 0.1.0
+appVersion: "dev"
+keywords:
+  - digital-legacy-vault
+  - nestjs
+  - nextjs
+maintainers:
+  - name: DLV Platform
+    email: platform@stellr-net.com

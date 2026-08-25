@@ -1,0 +1,33 @@
+{
+  "name": "@dlv/eslint-config",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared ESLint 9 flat-config presets for Digital Legacy Vault: base (strict type-checked TS), nest (decorator-friendly), next (Next.js core-web-vitals + react-hooks).",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./base": "./base.mjs",
+    "./nest": "./nest.mjs",
+    "./next": "./next.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "base.mjs",
+    "nest.mjs",
+    "next.mjs"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@next/eslint-plugin-next": "^15.3.4",
+    "eslint-plugin-import-x": "^4.16.1",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "typescript-eslint": "^8.35.0"
+  },
+  "peerDependencies": {
+    "eslint": "^9.0.0"
+  }
+}

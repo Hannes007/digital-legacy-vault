@@ -1,0 +1,13 @@
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/.turbo
+.git
+**/*.spec.ts
+**/*.e2e-spec.ts
+**/.env
+**/.env.*
+!**/.env.example
+Dockerfile
+**/*.md

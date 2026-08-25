@@ -1,0 +1,33 @@
+# The dev environment: renders the umbrella chart (infra/helm/dlv) with the dev
+# values overlay. Multi-source so the values file can live outside the chart dir
+# (the $values ref). The deploy-dev workflow bumps image tags in that values
+# file; Argo CD then syncs the dev cluster (GitOps — CI never runs kubectl).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dlv-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: dlv
+  sources:
+    - repoURL: https://github.com/stellr-sa/digital-legacy-vault.git
+      targetRevision: main
+      ref: values
+    - repoURL: https://github.com/stellr-sa/digital-legacy-vault.git
+      targetRevision: main
+      path: infra/helm/dlv
+      helm:
+        valueFiles:
+          - $values/infra/helm/values/dev.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dlv-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true

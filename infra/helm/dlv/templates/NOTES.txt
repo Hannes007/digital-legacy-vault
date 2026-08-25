@@ -1,0 +1,33 @@
+Digital Legacy Vault ({{ .Chart.Name }}-{{ .Chart.Version }}) deployed as release "{{ .Release.Name }}".
+
+Components:
+{{- if .Values.api.enabled }}
+  - api  : {{ include "dlv.image" (dict "root" . "img" .Values.api.image) }}  (port {{ .Values.api.containerPort }})
+{{- end }}
+{{- if .Values.web.enabled }}
+  - web  : {{ include "dlv.image" (dict "root" . "img" .Values.web.image) }}  (port {{ .Values.web.containerPort }})
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+Public URL (once the ALB is provisioned and DNS resolves):
+  https://{{ .Values.ingress.host }}/
+{{- if not .Values.ingress.certificateArn }}
+
+  WARNING: ingress.certificateArn is empty — set the ACM certificate ARN or the
+  HTTPS listener will not be created.
+{{- end }}
+{{- end }}
+
+Secrets: this chart expects Kubernetes Secrets synced by External Secrets Operator:
+{{- if .Values.api.enabled }}
+  - {{ .Values.api.existingSecret }} (api)
+{{- end }}
+{{- if .Values.web.enabled }}
+  - {{ .Values.web.existingSecret }} (web)
+{{- end }}
+These are populated from AWS Secrets Manager (RDS + Redis secret ARNs are Terraform
+outputs). No secrets are baked into the chart (invariant §7.7).
+
+Verify rollout:
+  kubectl -n <namespace> get deploy,po,svc,ingress -l app.kubernetes.io/instance={{ .Release.Name }}

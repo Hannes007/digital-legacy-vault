@@ -1,0 +1,19 @@
+# next.js
+/.next/
+/out/
+next-env.d.ts
+
+# serwist build output
+/public/sw.js
+/public/sw.js.map
+
+# testing
+/coverage/
+/playwright-report/
+/test-results/
+/blob-report/
+
+# env
+.env
+.env.local
+.env.*.local

@@ -1,0 +1,81 @@
+{{- if .Values.clamav.enabled }}
+# ClamAV (clamd) for the upload-scan step (§7.5). The API/worker connect over
+# TCP INSTREAM at dlv-clamav:3310. Signature DB lives on an emptyDir refreshed
+# by freshclam in the image; a PVC can be added for faster restarts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dlv-clamav
+  labels:
+    {{- include "dlv.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: clamav
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dlv.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: clamav
+  template:
+    metadata:
+      labels:
+        {{- include "dlv.commonLabels" . | nindent 8 }}
+        app.kubernetes.io/name: {{ include "dlv.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: clamav
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: clamav
+          image: "{{ .Values.clamav.image.repository }}:{{ .Values.clamav.image.tag }}"
+          imagePullPolicy: {{ .Values.clamav.image.pullPolicy }}
+          ports:
+            - name: clamd
+              containerPort: 3310
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: clamd
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          livenessProbe:
+            tcpSocket:
+              port: clamd
+            initialDelaySeconds: 90
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.clamav.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: clamav-db
+              mountPath: /var/lib/clamav
+      volumes:
+        - name: clamav-db
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dlv-clamav
+  labels:
+    {{- include "dlv.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: clamav
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "dlv.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: clamav
+  ports:
+    - name: clamd
+      port: 3310
+      targetPort: clamd
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,57 @@
+{{- if and .Values.api.enabled .Values.migrations.enabled }}
+# Database migrations run as an Argo CD PreSync hook, BEFORE app pods roll —
+# application pods never migrate (deployment-strategy.md §5). Uses the api image.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "dlv.fullname" . }}-migrate
+  labels:
+    {{- include "dlv.commonLabels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "dlv.commonLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Values.api.serviceAccount.name | default (printf "%s-api" (include "dlv.fullname" .)) }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ include "dlv.image" (dict "root" . "img" .Values.api.image) }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          command: {{ toJson .Values.migrations.command }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "dlv.fullname" . }}-api
+            - secretRef:
+                name: {{ .Values.api.existingSecret }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

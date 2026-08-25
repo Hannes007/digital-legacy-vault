@@ -1,0 +1,24 @@
+# App-of-apps: syncs everything under infra/argocd/apps so environments are
+# added declaratively. Bootstrap once:  kubectl apply -f infra/argocd/root-app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dlv-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: dlv
+  source:
+    repoURL: https://github.com/stellr-sa/digital-legacy-vault.git
+    targetRevision: main
+    path: infra/argocd/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ApplyOutOfSyncOnly=true

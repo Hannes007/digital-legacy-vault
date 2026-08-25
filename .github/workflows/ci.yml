@@ -1,0 +1,288 @@
+# =============================================================================
+# ci.yml — PR quality + security pipeline
+#
+# Design source: docs/06-engineering/cicd-pipeline.md §2
+# Security posture:
+#   - default permissions: contents: read; jobs elevate only what they need
+#   - all third-party actions pinned to full commit SHAs (supply-chain);
+#     actions/* + github/* official actions pinned to major tags
+#   - no AWS access in this workflow at all (PR pipeline never deploys)
+#   - fork PRs receive no secrets by GitHub default; nothing here requires them
+# =============================================================================
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Quality gates
+  # ---------------------------------------------------------------------------
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Restore Turborepo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-lint-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-lint-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo lint --cache-dir=.turbo
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Restore Turborepo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-typecheck-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-typecheck-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo typecheck --cache-dir=.turbo
+
+  unit-tests:
+    name: unit tests
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Restore Turborepo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-test-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-test-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo test --cache-dir=.turbo -- --coverage
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: |
+            apps/*/coverage/
+            packages/*/coverage/
+          if-no-files-found: warn
+          retention-days: 14
+
+  build:
+    name: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Restore Turborepo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-build-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-build-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo build --cache-dir=.turbo
+
+  # ---------------------------------------------------------------------------
+  # Security gates
+  # ---------------------------------------------------------------------------
+  gitleaks:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so gitleaks can scan the whole PR commit range,
+          # not just the merge commit (leaked-then-removed secrets still count).
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  codeql:
+    name: SAST (CodeQL)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write # required to upload SARIF results
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript-typescript
+
+  dependency-audit:
+    name: dependency audit
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Advisory only: pnpm audit has a high false-positive rate on dev-tooling
+      # chains; osv-scanner below is the blocking gate. Findings still surface
+      # in the job summary so they are never silently ignored.
+      - name: pnpm audit (production deps, non-blocking)
+        continue-on-error: true
+        run: |
+          set +e
+          pnpm audit --prod --audit-level high | tee audit.txt
+          status=$?
+          {
+            echo '## pnpm audit --prod (advisory)'
+            echo '```'
+            cat audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            echo "::warning title=pnpm audit::High/critical advisories found in production dependency graph — review the job summary."
+          fi
+          exit 0
+      # Blocking gate: OSV database scan of the committed lockfile.
+      - name: osv-scanner (blocking)
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        with:
+          scan-args: |-
+            --lockfile=pnpm-lock.yaml
+
+  hadolint:
+    name: Dockerfile lint (hadolint)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
+        with:
+          recursive: true
+          dockerfile: '*Dockerfile*'
+          failure-threshold: warning
+
+  actionlint:
+    name: workflow lint (actionlint)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      # Version-pinned official container image; keeps the linter itself out of
+      # the Node/pnpm toolchain and avoids a curl-to-shell install.
+      - name: Run actionlint
+        run: |
+          docker run --rm -v "${PWD}:/repo" --workdir /repo \
+            rhysd/actionlint:1.7.7 -color
+
+  # ---------------------------------------------------------------------------
+  # Container image gates — build (not pushed), scan, SBOM
+  # ---------------------------------------------------------------------------
+  docker:
+    name: docker (${{ matrix.app }})
+    needs: [build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [api, web]
+    steps:
+      - uses: actions/checkout@v4
+      # Canonical Dockerfile location is docker/<app>.Dockerfile
+      # (docs/02-architecture/folder-structure.md); apps/<app>/Dockerfile is
+      # accepted as a fallback so the pipeline works either way.
+      - name: Locate Dockerfile
+        id: dockerfile
+        run: |
+          if [ -f "docker/${{ matrix.app }}.Dockerfile" ]; then
+            echo "path=docker/${{ matrix.app }}.Dockerfile" >> "$GITHUB_OUTPUT"
+          elif [ -f "apps/${{ matrix.app }}/Dockerfile" ]; then
+            echo "path=apps/${{ matrix.app }}/Dockerfile" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error title=Dockerfile missing::No Dockerfile found for ${{ matrix.app }} (looked in docker/ and apps/${{ matrix.app }}/)."
+            exit 1
+          fi
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build image (never pushed from a PR)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ${{ steps.dockerfile.outputs.path }}
+          tags: dlv/${{ matrix.app }}:pr-${{ github.event.pull_request.number || github.run_id }}
+          load: true
+          push: false
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+      # Blocking: HIGH/CRITICAL vulnerabilities fail the PR. Unfixed findings
+      # may be allow-listed via .trivyignore entries with an expiry comment.
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: dlv/${{ matrix.app }}:pr-${{ github.event.pull_request.number || github.run_id }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+      - name: Generate SBOM (syft)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: dlv/${{ matrix.app }}:pr-${{ github.event.pull_request.number || github.run_id }}
+          format: spdx-json
+          artifact-name: sbom-${{ matrix.app }}.spdx.json
+          upload-artifact: true
