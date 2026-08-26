@@ -36,7 +36,7 @@
     "clean": "rimraf dist coverage .turbo"
   },
   "dependencies": {
-    "zod": "^3.25.67"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@dlv/eslint-config": "workspace:*",
