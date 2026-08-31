@@ -2,7 +2,7 @@
 
 Secure digital estate vault for individuals, families, and the professionals who serve them — living wills, last wills, powers of attorney, medical directives, and the full spectrum of legal, medical, financial, and personal documents, with digital signing, controlled sharing, and audited emergency access.
 
-**Status:** Phase 1 (Requirements & Architecture) complete — awaiting approval to begin Phase 2 (Foundation).
+**Status:** All ten roadmap phases (2–10) are code-complete as of 2026-07-20 — see `PROJECT_STATE.md` for the full phase-by-phase log. The codebase, tests, and infra-as-code were built and verified in an isolated development sandbox; it has not yet been deployed to live AWS infrastructure. Remaining work is the live-environment path: Terraform/Helm apply against a real account, external pentest, legal review (ECTA / SA Wills Act wet-ink caveat), the SOC 2 observation window, and the GA launch runbook.
 
 ## How to navigate this repository
 
